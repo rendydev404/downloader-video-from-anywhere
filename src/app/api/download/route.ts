@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import axios from 'axios';
-import ytdl from '@distube/ytdl-core';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
@@ -8,121 +7,255 @@ import path from 'path';
 
 const execFileAsync = promisify(execFile);
 
+const YTDLP_TIMEOUT = 30000;
+
+function getYtdlpPath(): string | null {
+  const exePath = path.join(process.cwd(), 'yt-dlp.exe');
+  if (fs.existsSync(exePath)) return exePath;
+  return null;
+}
+
+function detectPlatform(url: string, extractor?: string): string {
+  const u = url.toLowerCase();
+  const e = (extractor || '').toLowerCase();
+  if (u.includes('tiktok.com') || e.includes('tiktok')) return 'tiktok';
+  if (u.includes('youtube.com') || u.includes('youtu.be') || e.includes('youtube')) return 'youtube';
+  if (u.includes('instagram.com') || e.includes('instagram')) return 'instagram';
+  if (u.includes('facebook.com') || u.includes('fb.watch') || e.includes('facebook')) return 'facebook';
+  if (u.includes('twitter.com') || u.includes('x.com') || e.includes('twitter')) return 'twitter';
+  if (u.includes('reddit.com') || e.includes('reddit')) return 'reddit';
+  if (u.includes('vimeo.com') || e.includes('vimeo')) return 'vimeo';
+  if (u.includes('twitch.tv') || e.includes('twitch')) return 'twitch';
+  if (u.includes('dailymotion.com') || e.includes('dailymotion')) return 'dailymotion';
+  if (u.includes('bilibili.com') || e.includes('bilibili')) return 'bilibili';
+  return 'other';
+}
+
+// TikTok handler using TikWM API (bypasses 403 Forbidden from yt-dlp)
+async function handleTikTok(url: string) {
+  try {
+    const response = await axios.post(
+      'https://www.tikwm.com/api/',
+      new URLSearchParams({ url, count: '12', cursor: '0', web: '1', hd: '1' }),
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout: 15000,
+      }
+    );
+
+    const data = response.data?.data;
+    if (data) {
+      let videoUrl = data.hdplay || data.play;
+      let audioUrl = data.music_info?.play || data.music || '';
+      
+      if (videoUrl) {
+        // TikWM sometimes returns relative URLs
+        if (videoUrl.startsWith('/')) {
+          videoUrl = 'https://www.tikwm.com' + videoUrl;
+        }
+        if (audioUrl.startsWith('/')) {
+          audioUrl = 'https://www.tikwm.com' + audioUrl;
+        }
+        let thumbnail = data.cover || data.origin_cover || '';
+        if (thumbnail.startsWith('/')) {
+          thumbnail = 'https://www.tikwm.com' + thumbnail;
+        }
+        return {
+          success: true,
+          title: data.title || 'TikTok Video',
+          thumbnail: thumbnail,
+          duration: data.duration || 0,
+          resolution: '',
+          filesize: 0,
+          ext: 'mp4',
+          platform: 'tiktok',
+          uploader: data.author?.nickname || data.author?.unique_id || '',
+          directUrl: videoUrl,
+          audioUrl: audioUrl,
+          source: 'tikwm',
+        };
+      }
+    }
+  } catch (e: any) {
+    console.error('TikWM API error:', e.message);
+  }
+  return null;
+}
+
+// Instagram handler using public scraper
+async function handleInstagram(url: string) {
+  // Try multiple Instagram download APIs
+  const apis = [
+    async () => {
+      const response = await axios.post(
+        'https://v3.igdownloader.app/api/ajaxSearch',
+        new URLSearchParams({ q: url, t: 'media', lang: 'en' }).toString(),
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+          timeout: 15000,
+        }
+      );
+      if (response.data?.data) {
+        // Extract video URL from HTML response
+        const htmlData = response.data.data;
+        const videoMatch = htmlData.match(/href="([^"]+\.mp4[^"]*)"/i) 
+          || htmlData.match(/href="(https:\/\/[^"]+)"/i);
+        if (videoMatch && videoMatch[1]) {
+          return {
+            success: true,
+            title: 'Instagram Video',
+            thumbnail: '',
+            duration: 0,
+            resolution: '',
+            filesize: 0,
+            ext: 'mp4',
+            platform: 'instagram',
+            uploader: '',
+            directUrl: videoMatch[1],
+            source: 'igdownloader',
+          };
+        }
+      }
+      return null;
+    },
+  ];
+
+  for (const apiFn of apis) {
+    try {
+      const result = await apiFn();
+      if (result) return result;
+    } catch (e: any) {
+      console.error('IG API error:', e.message);
+    }
+  }
+  return null;
+}
+
 export async function POST(req: Request) {
   try {
     const { url } = await req.json();
 
-    if (!url) {
+    if (!url || typeof url !== 'string') {
       return NextResponse.json({ error: 'URL tidak boleh kosong.' }, { status: 400 });
     }
 
-    const isTikTok = url.includes('tiktok.com');
-    const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
-    const isInstagram = url.includes('instagram.com');
-    const isFacebook = url.includes('facebook.com') || url.includes('fb.watch');
+    try {
+      new URL(url);
+    } catch {
+      return NextResponse.json({ error: 'Format URL tidak valid.' }, { status: 400 });
+    }
 
-    // 1. TIKTOK (TikWM - 100% Works)
-    if (isTikTok) {
-      try {
-        const response = await axios.post('https://www.tikwm.com/api/', { url, count: 12, cursor: 0, web: 1, hd: 1 });
-        const data = response.data.data;
-        if (data) {
-          return NextResponse.json({
-            title: data.title || 'Video TikTok',
-            thumbnail: data.cover || '',
-            url: data.hdplay || data.play,
-            platform: 'tiktok'
-          });
-        }
-      } catch (e) {
-        console.error("TikWM Error:", e);
+    const platform = detectPlatform(url);
+
+    // TikTok: Use TikWM API (yt-dlp gets 403 from TikTok)
+    if (platform === 'tiktok') {
+      const tikTokResult = await handleTikTok(url);
+      if (tikTokResult) {
+        return NextResponse.json(tikTokResult);
+      }
+      // If TikWM fails, try yt-dlp with cookies below
+    }
+
+    // Instagram: Try scraper API first
+    if (platform === 'instagram') {
+      const igResult = await handleInstagram(url);
+      if (igResult) {
+        return NextResponse.json(igResult);
       }
     }
 
-    // 2. YOUTUBE (YTDL-Core with Fallback)
-    if (isYouTube) {
-      try {
-        const info = await ytdl.getInfo(url);
-        const format = ytdl.chooseFormat(info.formats, { quality: 'highest', filter: 'audioandvideo' });
-        if (format && format.url) {
-          return NextResponse.json({
-            title: info.videoDetails.title,
-            thumbnail: info.videoDetails.thumbnails[0]?.url || '',
-            url: format.url,
-            platform: 'youtube'
-          });
-        }
-      } catch (error: any) {
-        console.error("YTDL Error:", error.message);
-        if (error.message.includes('unavailable') || error.message.includes('private')) {
-           return NextResponse.json({ error: 'Video YouTube ini tidak tersedia, privat, atau telah dihapus.' }, { status: 400 });
-        }
-      }
+    // All other platforms (including fallback): Use yt-dlp
+    const ytdlpPath = getYtdlpPath();
+    if (!ytdlpPath) {
+      return NextResponse.json({ error: 'yt-dlp.exe tidak ditemukan di server.' }, { status: 500 });
     }
 
-    // 3. NATIVE FALLBACK (YT-DLP) for Any Platform if yt-dlp.exe is available
-    // yt-dlp is extremely powerful and bypasses most restrictions locally.
-    const ytdlpPath = path.join(process.cwd(), 'yt-dlp.exe');
-    if (fs.existsSync(ytdlpPath)) {
-      try {
-        const { stdout } = await execFileAsync(ytdlpPath, ['--dump-json', url]);
-        const data = JSON.parse(stdout);
-        if (data.url || (data.formats && data.formats.length > 0)) {
-           // Find best format with both video and audio
-           let bestUrl = data.url;
-           if (!bestUrl && data.formats) {
-               const bestFormat = data.formats.filter((f: any) => f.vcodec !== 'none' && f.acodec !== 'none').pop();
-               if (bestFormat) bestUrl = bestFormat.url;
-               else bestUrl = data.formats.pop()?.url;
-           }
-           
-           if (bestUrl) {
-               return NextResponse.json({
-                 title: data.title || 'Video',
-                 thumbnail: data.thumbnail || '',
-                 url: bestUrl,
-                 platform: isYouTube ? 'youtube' : isInstagram ? 'instagram' : isFacebook ? 'facebook' : 'other'
-               });
-           }
+    try {
+      const args = [
+        '--dump-json',
+        '--no-warnings',
+        '--no-playlist',
+        '--no-check-certificates',
+        url,
+      ];
+
+      const { stdout } = await execFileAsync(ytdlpPath, args, {
+        timeout: YTDLP_TIMEOUT,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+
+      const data = JSON.parse(stdout);
+
+      let filesize = 0;
+      let ext = data.ext || 'mp4';
+      let resolution = '';
+
+      if (data.formats && data.formats.length > 0) {
+        const mergedFormats = data.formats.filter(
+          (f: any) => f.vcodec && f.vcodec !== 'none' && f.acodec && f.acodec !== 'none'
+        );
+
+        if (mergedFormats.length > 0) {
+          const best = mergedFormats[mergedFormats.length - 1];
+          filesize = best.filesize || best.filesize_approx || 0;
+          ext = best.ext || ext;
+          resolution = best.resolution || `${best.width || '?'}x${best.height || '?'}`;
+        } else {
+          const videoFormats = data.formats.filter((f: any) => f.vcodec && f.vcodec !== 'none');
+          if (videoFormats.length > 0) {
+            const best = videoFormats[videoFormats.length - 1];
+            resolution = best.resolution || `${best.width || '?'}x${best.height || '?'}`;
+          }
         }
-      } catch (e: any) {
-        console.error("YT-DLP Error:", e.message);
       }
-    }
 
-    // 4. INSTAGRAM & FACEBOOK (Public Scraper APIs)
-    if (isInstagram || isFacebook) {
-      try {
-         // Proxy via rapid API alternatives or public web endpoints if deployed
-         const response = await axios.post('https://v3.igdownloader.app/api/ajaxSearch', 
-            new URLSearchParams({ q: url, t: 'media', lang: 'en' }).toString(),
-            { headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Mozilla/5.0' } }
-         );
-         
-         if (response.data && response.data.data) {
-            // Very naive HTML parsing to extract MP4 link from the response string
-            const match = response.data.data.match(/href="([^"]+\.mp4[^"]*)"/i);
-            if (match && match[1]) {
-                return NextResponse.json({
-                  title: isInstagram ? 'Instagram Video' : 'Facebook Video',
-                  thumbnail: '',
-                  url: match[1],
-                  platform: isInstagram ? 'instagram' : 'facebook'
-                });
-            }
-         }
-      } catch (e) {
-         console.error("IG/FB Scraper Error:", e);
+      if (data.filesize) filesize = data.filesize;
+      if (data.filesize_approx && !filesize) filesize = data.filesize_approx;
+
+      return NextResponse.json({
+        success: true,
+        title: data.title || 'Video',
+        thumbnail: data.thumbnail || '',
+        duration: data.duration || 0,
+        resolution: resolution || data.resolution || '',
+        filesize: filesize,
+        ext: ext,
+        platform: detectPlatform(url, data.extractor),
+        uploader: data.uploader || data.channel || '',
+        source: 'ytdlp',
+      });
+    } catch (error: any) {
+      console.error('yt-dlp info error:', error.message);
+      const stderr = error.stderr || error.message || '';
+
+      if (stderr.includes('is not a valid URL') || stderr.includes('Unsupported URL')) {
+        return NextResponse.json({ error: 'URL tidak didukung atau tidak valid.' }, { status: 400 });
       }
+      if (stderr.includes('Private video') || stderr.includes('private')) {
+        return NextResponse.json({ error: 'Video ini bersifat privat dan tidak dapat diunduh.' }, { status: 403 });
+      }
+      if (stderr.includes('Video unavailable') || stderr.includes('removed')) {
+        return NextResponse.json({ error: 'Video tidak tersedia atau telah dihapus.' }, { status: 404 });
+      }
+      if (stderr.includes('Sign in') || stderr.includes('login')) {
+        return NextResponse.json({ error: 'Video ini memerlukan login untuk diakses.' }, { status: 403 });
+      }
+      if (stderr.includes('403') || stderr.includes('Forbidden')) {
+        return NextResponse.json({ error: 'Akses ditolak oleh platform. Coba lagi nanti.' }, { status: 403 });
+      }
+
+      return NextResponse.json({
+        error: 'Gagal mendapatkan info video. Pastikan URL valid dan video bisa diakses publik.',
+      }, { status: 500 });
     }
-
-    // If all methods fail
-    return NextResponse.json({ 
-      error: 'Gagal mengunduh video. Video mungkin privat, dihapus, atau platform sedang memblokir akses. Coba gunakan link lain atau coba lagi nanti.' 
-    }, { status: 500 });
-
   } catch (error) {
     console.error('API Route Error:', error);
-    return NextResponse.json({ error: 'Terjadi kesalahan pada server saat memproses link Anda.' }, { status: 500 });
+    return NextResponse.json({ error: 'Terjadi kesalahan pada server.' }, { status: 500 });
   }
 }

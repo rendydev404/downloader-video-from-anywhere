@@ -5,8 +5,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
 
 export const metadata: Metadata = {
-  title: "Universal Video Downloader",
-  description: "Unduh video TikTok, Instagram, YouTube tanpa watermark. Cepat dan elegan.",
+  title: "RELOAD - Video Downloader",
+  description: "RELOAD - Unduh video dari TikTok, Instagram, YouTube, dan 1000+ situs lainnya tanpa watermark.",
 };
 
 export default function RootLayout({
