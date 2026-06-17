@@ -206,7 +206,7 @@ export default function Home() {
       // Step 3: Create blob and trigger download
       setPhase("saving");
       
-      const blob = new Blob(chunks, { type: type === 'audio' ? "audio/mpeg" : "video/mp4" });
+      const blob = new Blob(chunks as BlobPart[], { type: type === 'audio' ? "audio/mpeg" : "video/mp4" });
       const blobUrl = URL.createObjectURL(blob);
       
       const a = document.createElement("a");
@@ -443,16 +443,14 @@ export default function Home() {
                 )}
 
                 {/* Progress Bar */}
-                {isProcessing && phase !== "fetching-info" && phase !== "ready" && (
+                {isProcessing && phase !== "fetching-info" && (
                   <div className="space-y-3">
                     <div className="w-full bg-white/5 rounded-full h-3 overflow-hidden">
                       <motion.div
                         className="h-full rounded-full bg-gradient-to-r from-primary to-purple-500"
                         initial={{ width: "0%" }}
                         animate={{
-                          width: phase === "fetching-info"
-                            ? "15%"
-                            : phase === "downloading" && progress > 0
+                          width: phase === "downloading" && progress > 0
                             ? `${progress}%`
                             : phase === "downloading"
                             ? "30%"
