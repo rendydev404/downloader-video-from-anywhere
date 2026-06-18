@@ -435,40 +435,7 @@ export default function Home() {
                     animate={{ opacity: 1, y: 0 }}
                     className="flex flex-col mt-4"
                   >
-                    {result?.platform === 'youtube' ? (
-                      <div className="flex flex-col gap-3">
-                        <div className="grid grid-cols-3 gap-2">
-                          <button
-                            onClick={() => handleDownloadFormat('video', '360')}
-                            className="glass-btn hover:glass-btn-hover text-white py-3 px-2 rounded-2xl font-semibold flex items-center justify-center gap-1 active:scale-[0.97] text-sm"
-                          >
-                            <FiVideo className="w-4 h-4 hidden sm:block" />
-                            360p
-                          </button>
-                          <button
-                            onClick={() => handleDownloadFormat('video', '720')}
-                            className="glass-btn hover:glass-btn-hover text-white py-3 px-2 rounded-2xl font-semibold flex items-center justify-center gap-1 active:scale-[0.97] text-sm"
-                          >
-                            <FiVideo className="w-4 h-4 hidden sm:block" />
-                            720p
-                          </button>
-                          <button
-                            onClick={() => handleDownloadFormat('video', '1080')}
-                            className="glass-btn hover:glass-btn-hover text-white py-3 px-2 rounded-2xl font-semibold flex items-center justify-center gap-1 active:scale-[0.97] text-sm"
-                          >
-                            <FiVideo className="w-4 h-4 hidden sm:block" />
-                            1080p
-                          </button>
-                        </div>
-                        <button
-                          onClick={() => handleDownloadFormat('audio')}
-                          className="glass-btn hover:glass-btn-hover w-full text-white py-3 px-4 rounded-2xl font-semibold flex items-center justify-center gap-2 active:scale-[0.97]"
-                        >
-                          <FiMusic className="w-5 h-5" />
-                          Download Audio (MP3)
-                        </button>
-                      </div>
-                    ) : result?.ext === 'jpg' || result?.ext === 'jpeg' || result?.ext === 'png' ? (
+                    {result?.ext === 'jpg' || result?.ext === 'jpeg' || result?.ext === 'png' ? (
                       <div className="flex flex-col gap-3">
                         <button
                           onClick={() => handleDownloadFormat('video')}

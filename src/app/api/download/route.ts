@@ -1,19 +1,5 @@
 import { NextResponse } from 'next/server';
 import axios from 'axios';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import fs from 'fs';
-import path from 'path';
-
-const execFileAsync = promisify(execFile);
-
-const YTDLP_TIMEOUT = 30000;
-
-function getYtdlpPath(): string | null {
-  const exePath = path.join(process.cwd(), 'yt-dlp.exe');
-  if (fs.existsSync(exePath)) return exePath;
-  return null;
-}
 
 function detectPlatform(url: string, extractor?: string): string {
   const u = url.toLowerCase();
@@ -241,88 +227,115 @@ export async function POST(req: Request) {
       }
     }
 
-    // All other platforms (including fallback): Use yt-dlp
-    const ytdlpPath = getYtdlpPath();
-    if (!ytdlpPath) {
-      return NextResponse.json({ error: 'yt-dlp.exe tidak ditemukan di server.' }, { status: 500 });
-    }
-
+    // All other platforms (including fallback): Use btch-downloader
     try {
-      const args = [
-        '--dump-json',
-        '--no-warnings',
-        '--no-playlist',
-        '--no-check-certificates',
-        url,
-      ];
+      // Dynamic import to avoid issues if not found
+      const btch = require('btch-downloader');
+      let result: any = null;
 
-      const { stdout } = await execFileAsync(ytdlpPath, args, {
-        timeout: YTDLP_TIMEOUT,
-        maxBuffer: 10 * 1024 * 1024,
-      });
+      if (platform === 'youtube') {
+        const yt = await btch.youtube(url);
+        if (yt && yt.status) {
+          result = {
+            success: true,
+            title: yt.title || 'YouTube Video',
+            thumbnail: yt.thumbnail || '',
+            duration: 0,
+            resolution: '720p',
+            filesize: 0,
+            ext: 'mp4',
+            platform: 'youtube',
+            uploader: yt.author || '',
+            directUrl: yt.mp4,
+            audioUrl: yt.mp3,
+            source: 'btch-youtube',
+          };
+        }
+      } else if (platform === 'tiktok') {
+        const tt = await btch.ttdl(url);
+        if (tt && tt.status) {
+           result = {
+              success: true,
+              title: tt.title || 'TikTok Video',
+              thumbnail: tt.thumbnail || '',
+              duration: 0,
+              resolution: '',
+              filesize: 0,
+              ext: 'mp4',
+              platform: 'tiktok',
+              uploader: '',
+              directUrl: tt.video?.[0] || '',
+              audioUrl: tt.audio?.[0] || '',
+              source: 'btch-tiktok',
+           };
+        }
+      } else if (platform === 'instagram') {
+        const ig = await btch.igdl(url);
+        if (ig && ig.status && ig.result && ig.result.length > 0) {
+           result = {
+              success: true,
+              title: 'Instagram Post',
+              thumbnail: ig.result[0].thumbnail || '',
+              duration: 0,
+              resolution: '',
+              filesize: 0,
+              ext: 'mp4',
+              platform: 'instagram',
+              uploader: '',
+              directUrl: ig.result[0].url,
+              source: 'btch-ig',
+           };
+        }
+      } else if (platform === 'facebook') {
+        const fb = await btch.fbdown(url);
+        if (fb && fb.status) {
+           result = {
+              success: true,
+              title: 'Facebook Video',
+              thumbnail: '',
+              duration: 0,
+              resolution: 'HD',
+              filesize: 0,
+              ext: 'mp4',
+              platform: 'facebook',
+              uploader: '',
+              directUrl: fb.HD || fb.Normal_video,
+              source: 'btch-fb',
+           };
+        }
+      } else if (platform === 'twitter') {
+        const tw = await btch.twitter(url);
+        if (tw && tw.status && tw.url && tw.url.length > 0) {
+           let directUrl = '';
+           if (tw.url[0].hd) directUrl = tw.url[0].hd;
+           else if (tw.url[0].sd) directUrl = tw.url[0].sd;
+           else if (tw.url[0].url) directUrl = tw.url[0].url;
 
-      const data = JSON.parse(stdout);
-
-      let filesize = 0;
-      let ext = data.ext || 'mp4';
-      let resolution = '';
-
-      if (data.formats && data.formats.length > 0) {
-        const mergedFormats = data.formats.filter(
-          (f: any) => f.vcodec && f.vcodec !== 'none' && f.acodec && f.acodec !== 'none'
-        );
-
-        if (mergedFormats.length > 0) {
-          const best = mergedFormats[mergedFormats.length - 1];
-          filesize = best.filesize || best.filesize_approx || 0;
-          ext = best.ext || ext;
-          resolution = best.resolution || `${best.width || '?'}x${best.height || '?'}`;
-        } else {
-          const videoFormats = data.formats.filter((f: any) => f.vcodec && f.vcodec !== 'none');
-          if (videoFormats.length > 0) {
-            const best = videoFormats[videoFormats.length - 1];
-            resolution = best.resolution || `${best.width || '?'}x${best.height || '?'}`;
-          }
+           result = {
+              success: true,
+              title: tw.title || 'Twitter Video',
+              thumbnail: '',
+              duration: 0,
+              resolution: '',
+              filesize: 0,
+              ext: 'mp4',
+              platform: 'twitter',
+              uploader: '',
+              directUrl: directUrl,
+              source: 'btch-tw',
+           };
         }
       }
 
-      if (data.filesize) filesize = data.filesize;
-      if (data.filesize_approx && !filesize) filesize = data.filesize_approx;
-
-      return NextResponse.json({
-        success: true,
-        title: data.title || 'Video',
-        thumbnail: data.thumbnail || '',
-        duration: data.duration || 0,
-        resolution: resolution || data.resolution || '',
-        filesize: filesize,
-        ext: ext,
-        platform: detectPlatform(url, data.extractor),
-        uploader: data.uploader || data.channel || '',
-        source: 'ytdlp',
-      });
+      if (result && result.directUrl) {
+        return NextResponse.json(result);
+      } else {
+        return NextResponse.json({ error: 'Gagal mendapatkan info video. Pastikan URL valid dan video bisa diakses publik.' }, { status: 400 });
+      }
     } catch (error: any) {
-      console.error('yt-dlp info error:', error.message);
-      const stderr = error.stderr || error.message || '';
-
-      if (stderr.includes('is not a valid URL') || stderr.includes('Unsupported URL')) {
-        return NextResponse.json({ error: 'URL tidak didukung atau tidak valid.' }, { status: 400 });
-      }
-      if (stderr.includes('Private video') || stderr.includes('private')) {
-        return NextResponse.json({ error: 'Video ini bersifat privat dan tidak dapat diunduh.' }, { status: 403 });
-      }
-      if (stderr.includes('Video unavailable') || stderr.includes('removed')) {
-        return NextResponse.json({ error: 'Video tidak tersedia atau telah dihapus.' }, { status: 404 });
-      }
-      if (stderr.includes('Sign in') || stderr.includes('login')) {
-        return NextResponse.json({ error: 'Video ini memerlukan login untuk diakses.' }, { status: 403 });
-      }
-      if (stderr.includes('403') || stderr.includes('Forbidden')) {
-        return NextResponse.json({ error: 'Akses ditolak oleh platform. Coba lagi nanti.' }, { status: 403 });
-      }
-
+      console.error('btch-downloader info error:', error.message);
       return NextResponse.json({
-        error: 'Gagal mendapatkan info video. Pastikan URL valid dan video bisa diakses publik.',
+        error: 'Terjadi kesalahan saat memproses video dengan btch-downloader.',
       }, { status: 500 });
     }
   } catch (error) {
