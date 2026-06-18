@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
   const source = searchParams.get('source') || 'ytdlp';
   const titleParam = searchParams.get('title') || 'video';
   const typeParam = searchParams.get('type') || 'video';
+  const resParam = searchParams.get('res');
 
   if (!videoUrl && !directUrl) {
     return new Response(JSON.stringify({ error: 'Missing url parameter' }), {
@@ -39,6 +40,7 @@ export async function GET(req: NextRequest) {
 
   const isAudio = typeParam === 'audio';
   let targetMediaUrl = directUrl;
+  let audioTargetUrl: string | null = null;
   let title = titleParam;
   let customHeaders: Record<string, string> = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -60,7 +62,13 @@ export async function GET(req: NextRequest) {
       // Gunakan bestaudio hanya untuk YouTube (karena stream-nya mendukung pipe ffmpeg).
       // Untuk platform lain (IG, FB, Twitter), ambil video MP4 utuh lalu ekstrak audionya 
       // untuk mencegah bug audio terpotong (2 detik) karena format DASH fragmented.
-      const formatArg = (isAudio && isYouTube) ? 'bestaudio' : 'best[ext=mp4]/best';
+      let formatArg = 'best[ext=mp4]/best';
+      if (isAudio && isYouTube) {
+        formatArg = 'bestaudio';
+      } else if (isYouTube && !isAudio && resParam) {
+        formatArg = `bestvideo[height<=${resParam}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${resParam}][ext=mp4]/best`;
+      }
+      
       const { stdout } = await execFileAsync(ytdlpPath, [
         '-J',
         '-f', formatArg,
@@ -71,7 +79,15 @@ export async function GET(req: NextRequest) {
       ], { timeout: 30000, maxBuffer: 1024 * 1024 * 10 });
       
       const info = JSON.parse(stdout);
-      targetMediaUrl = info.url;
+      
+      let videoTargetUrl = info.url;
+      if (!videoTargetUrl && info.requested_formats) {
+        // It's a split format
+        videoTargetUrl = info.requested_formats.find((f: any) => f.vcodec !== 'none')?.url;
+        audioTargetUrl = info.requested_formats.find((f: any) => f.acodec !== 'none')?.url || null;
+      }
+      
+      targetMediaUrl = videoTargetUrl;
       title = info.title || title;
       if (info.http_headers) {
         customHeaders = { ...customHeaders, ...info.http_headers };
@@ -94,17 +110,21 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const ext = isAudio ? '.mp3' : '.mp4';
+  let ext = searchParams.get('ext');
+  if (!ext) ext = isAudio ? '.mp3' : '.mp4';
+  if (!ext.startsWith('.')) ext = '.' + ext;
+  
   const safeFilename = sanitizeFilename(title) + ext;
-  const asciiFilename = safeFilename.replace(/[^\x00-\x7F]/g, '') || `RELOAD_Video${ext}`;
+  const asciiFilename = safeFilename.replace(/[^\x00-\x7F]/g, '') || `RELOAD_Media${ext}`;
 
-  const needsFfmpeg = isAudio && source === 'ytdlp';
+  const needsFfmpegAudio = isAudio && source === 'ytdlp';
+  const needsFfmpegVideoMerge = !isAudio && audioTargetUrl !== null;
 
   const headers = new Headers();
   headers.set('Content-Disposition', `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`);
   headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
 
-  if (needsFfmpeg) {
+  if (needsFfmpegAudio) {
     headers.set('Content-Type', 'audio/mpeg');
 
     const ffmpegPath = path.join(process.cwd(), 'bin', 'ffmpeg.exe');
@@ -147,6 +167,57 @@ export async function GET(req: NextRequest) {
       headers,
     });
 
+  } else if (needsFfmpegVideoMerge) {
+    headers.set('Content-Type', 'video/mp4');
+
+    const ffmpegPath = path.join(process.cwd(), 'bin', 'ffmpeg.exe');
+    if (!fs.existsSync(ffmpegPath)) {
+      return new Response(JSON.stringify({ error: 'FFmpeg tidak ditemukan.' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const headersStr = Object.entries(customHeaders).map(([k, v]) => `${k}: ${v}`).join('\r\n') + '\r\n';
+
+    const ffmpegProcess = spawn(ffmpegPath, [
+      '-headers', headersStr,
+      '-i', targetMediaUrl!,
+      '-headers', headersStr,
+      '-i', audioTargetUrl!,
+      '-c:v', 'copy',
+      '-c:a', 'copy',
+      '-f', 'mp4',
+      '-movflags', 'frag_keyframe+empty_moov',
+      'pipe:1'
+    ]);
+
+    const stream = new ReadableStream({
+      start(controller) {
+        ffmpegProcess.stdout.on('data', chunk => {
+          controller.enqueue(new Uint8Array(chunk));
+        });
+        ffmpegProcess.stdout.on('end', () => {
+          controller.close();
+        });
+        ffmpegProcess.on('error', err => {
+          console.error("FFmpeg mux error:", err);
+          controller.error(err);
+        });
+        ffmpegProcess.on('close', code => {
+          if (code !== 0 && code !== null) console.error("FFmpeg mux exited with code", code);
+        });
+      },
+      cancel() {
+        ffmpegProcess.kill('SIGKILL');
+      }
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers,
+    });
+
   } else {
     // Direct stream
     try {
@@ -158,7 +229,11 @@ export async function GET(req: NextRequest) {
         throw new Error(`Upstream HTTP ${response.status}`);
       }
 
-      headers.set('Content-Type', isAudio ? 'audio/mpeg' : 'video/mp4');
+      let contentType = isAudio ? 'audio/mpeg' : 'video/mp4';
+      if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+      else if (ext === '.png') contentType = 'image/png';
+      
+      headers.set('Content-Type', contentType);
       const contentLength = response.headers.get('content-length');
       if (contentLength) {
         headers.set('Content-Length', contentLength);

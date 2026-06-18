@@ -23,6 +23,7 @@ function detectPlatform(url: string, extractor?: string): string {
   if (u.includes('instagram.com') || e.includes('instagram')) return 'instagram';
   if (u.includes('facebook.com') || u.includes('fb.watch') || e.includes('facebook')) return 'facebook';
   if (u.includes('twitter.com') || u.includes('x.com') || e.includes('twitter')) return 'twitter';
+  if (u.includes('threads.net') || u.includes('threads.com') || e.includes('threads')) return 'threads';
   if (u.includes('reddit.com') || e.includes('reddit')) return 'reddit';
   if (u.includes('vimeo.com') || e.includes('vimeo')) return 'vimeo';
   if (u.includes('twitch.tv') || e.includes('twitch')) return 'twitch';
@@ -137,6 +138,68 @@ async function handleInstagram(url: string) {
   return null;
 }
 
+// Threads handler using native fetch to parse HTML
+async function handleThreads(url: string) {
+  try {
+    const fixedUrl = url.replace('threads.com', 'threads.net');
+    const response = await axios.get(fixedUrl, {
+      headers: {
+        'User-Agent': 'Instagram 314.0.0.33.109 Android',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
+      },
+      timeout: 15000,
+    });
+    
+    const html = response.data;
+    
+    const ogVideoMatch = html.match(/<meta property="og:video" content="([^"]+)"/);
+    const ogImageMatch = html.match(/<meta property="og:image" content="([^"]+)"/);
+    const titleMatch = html.match(/<title>(.*?)<\/title>/);
+    let title = titleMatch ? titleMatch[1].replace('on Threads', '').trim() : 'Threads Post';
+
+    let videoUrl = null;
+    let imageUrl = null;
+
+    if (ogVideoMatch && ogVideoMatch[1]) {
+      videoUrl = ogVideoMatch[1].replace(/&amp;/g, '&');
+    }
+    
+    if (ogImageMatch && ogImageMatch[1]) {
+      imageUrl = ogImageMatch[1].replace(/&amp;/g, '&');
+    }
+
+    if (videoUrl) {
+      return {
+        success: true,
+        title,
+        directUrl: videoUrl,
+        thumbnail: imageUrl || '',
+        ext: 'mp4',
+        platform: 'threads',
+        source: 'threads_native',
+      };
+    }
+
+    if (imageUrl) {
+      return {
+        success: true,
+        title,
+        directUrl: imageUrl,
+        thumbnail: imageUrl,
+        ext: 'jpg',
+        platform: 'threads',
+        source: 'threads_native',
+      };
+    }
+
+    return null;
+  } catch (error: any) {
+    console.error('Threads native extraction error:', error.message);
+    return null;
+  }
+}
+
 export async function POST(req: Request) {
   try {
     const { url } = await req.json();
@@ -167,6 +230,14 @@ export async function POST(req: Request) {
       const igResult = await handleInstagram(url);
       if (igResult) {
         return NextResponse.json(igResult);
+      }
+    }
+
+    // Threads: Try native HTML parsing first
+    if (platform === 'threads') {
+      const threadsResult = await handleThreads(url);
+      if (threadsResult) {
+        return NextResponse.json(threadsResult);
       }
     }
 

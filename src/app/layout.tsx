@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 
@@ -6,7 +6,18 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
 
 export const metadata: Metadata = {
   title: "RELOAD - Video Downloader",
-  description: "RELOAD - Unduh video dari TikTok, Instagram, YouTube, dan 1000+ situs lainnya tanpa watermark.",
+  description: "RELOAD - Download Video without watermark from any social media.",
+  icons: {
+    icon: "/favicon.png",
+  },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  themeColor: "#05050a",
+  colorScheme: "dark",
 };
 
 export default function RootLayout({
@@ -15,7 +26,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="id">
+    <html lang="en">
       <body className={`${inter.variable} antialiased`}>
         {children}
       </body>
