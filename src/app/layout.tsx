@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
-import SeoContent from "@/components/SeoContent";
 import "./globals.css";
 
 const GA_MEASUREMENT_ID = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
@@ -83,7 +82,6 @@ export default function RootLayout({
           }}
         />
         {children}
-        <SeoContent />
         {GA_MEASUREMENT_ID && (
           <>
             <Script

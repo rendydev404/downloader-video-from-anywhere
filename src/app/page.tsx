@@ -134,7 +134,7 @@ export default function Home() {
     }
   };
 
-  const handleDownloadFormat = async (type: 'video' | 'audio', resolutionHeight?: number) => {
+  const handleDownloadFormat = async (type: 'video' | 'audio') => {
     if (!result || !url) return;
 
     setPhase("downloading");
@@ -145,35 +145,26 @@ export default function Home() {
     try {
       // Step 2: Start downloading via fetch (so we can track progress)
 
-      const isYoutubeVideo = result.platform === 'youtube' && type === 'video';
-
-      let streamUrl: string;
-      if (isYoutubeVideo) {
-        // Real per-resolution YouTube stream, muxed server-side via yt-dlp + ffmpeg.
-        const ytParams = new URLSearchParams();
-        ytParams.set('url', url);
-        ytParams.set('title', result.title || 'video');
-        ytParams.set('height', String(resolutionHeight || 720));
-        streamUrl = `/api/download/youtube-stream?${ytParams.toString()}`;
-      } else {
-        // Build stream URL with appropriate params based on source
-        const streamParams = new URLSearchParams();
-        streamParams.set('url', url);
-        streamParams.set('title', result.title || 'video');
-        streamParams.set('type', type);
-        if (type === 'audio' && result.audioUrl) {
-          streamParams.set('directUrl', result.audioUrl);
-        } else if (result.directUrl) {
-          streamParams.set('directUrl', result.directUrl);
-        }
-        if (result.source) {
-          streamParams.set('source', result.source);
-        }
-        if (result.ext) {
-          streamParams.set('ext', result.ext);
-        }
-        streamUrl = `/api/download/stream?${streamParams.toString()}`;
+      // Stream every platform (YouTube included) via the reliable passthrough
+      // route: it fetches the direct media URL and streams it as-is, with audio
+      // transcoded to real MP3 when requested. This avoids running yt-dlp/ffmpeg
+      // muxing at request time, which is unreliable on Vercel's serverless runtime.
+      const streamParams = new URLSearchParams();
+      streamParams.set('url', url);
+      streamParams.set('title', result.title || 'video');
+      streamParams.set('type', type);
+      if (type === 'audio' && result.audioUrl) {
+        streamParams.set('directUrl', result.audioUrl);
+      } else if (result.directUrl) {
+        streamParams.set('directUrl', result.directUrl);
       }
+      if (result.source) {
+        streamParams.set('source', result.source);
+      }
+      if (result.ext) {
+        streamParams.set('ext', result.ext);
+      }
+      const streamUrl = `/api/download/stream?${streamParams.toString()}`;
       const response = await fetch(streamUrl);
       
       if (!response.ok) {
@@ -459,29 +450,6 @@ export default function Home() {
                         >
                           <FiDownload className="w-5 h-5" />
                           Download Image ({result?.ext.toUpperCase()})
-                        </button>
-                      </div>
-                    ) : result?.platform === 'youtube' ? (
-                      <div className="flex flex-col gap-3">
-                        <p className="text-center text-foreground/50 text-xs">Pilih resolusi video:</p>
-                        <div className="flex flex-col sm:flex-row gap-3">
-                          {[360, 720, 1080].map((h) => (
-                            <button
-                              key={h}
-                              onClick={() => handleDownloadFormat('video', h)}
-                              className="glass-btn hover:glass-btn-hover flex-1 text-white py-3 px-4 rounded-2xl font-semibold flex items-center justify-center gap-2 active:scale-[0.97]"
-                            >
-                              <FiVideo className="w-5 h-5" />
-                              {h}p
-                            </button>
-                          ))}
-                        </div>
-                        <button
-                          onClick={() => handleDownloadFormat('audio')}
-                          className="glass-btn hover:glass-btn-hover w-full text-white py-3 px-4 rounded-2xl font-semibold flex items-center justify-center gap-2 active:scale-[0.97]"
-                        >
-                          <FiMusic className="w-5 h-5" />
-                          Download Audio (MP3)
                         </button>
                       </div>
                     ) : (
